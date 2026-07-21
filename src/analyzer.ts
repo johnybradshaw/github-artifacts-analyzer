@@ -10,7 +10,7 @@ class GitHubArtifactsAnalyzer {
     });
   }
 
-  async analyzeAllRepositories(username, options = { includeExpired: false, minSize: 0 }) {
+  async analyzeAllRepositories(username, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
     // Get authenticated user if no username provided
     if (!username) {
       const { data: user } = await this.octokit.users.getAuthenticated();
@@ -80,7 +80,7 @@ class GitHubArtifactsAnalyzer {
     };
   }
 
-  async analyzePublicRepositories(username, options = { includeExpired: false, minSize: 0 }) {
+  async analyzePublicRepositories(username, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
     const repositories = [];
     let page = 1;
     let hasMore = true;
@@ -126,7 +126,7 @@ class GitHubArtifactsAnalyzer {
     };
   }
 
-  async analyzeRepository(owner, repo, options = { includeExpired: false, minSize: 0 }) {
+  async analyzeRepository(owner, repo, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
     const analysis = {
       owner,
       name: repo,
@@ -143,17 +143,15 @@ class GitHubArtifactsAnalyzer {
     };
 
     try {
-      // Get workflows for the repository
+      // Get workflows for the repository. This is one cheap call and is kept
+      // only so reports can show a workflow count; artifact discovery no
+      // longer depends on it.
       const { data: workflowsData } = await this.octokit.actions.listRepoWorkflows({
         owner,
         repo
       });
 
-      if (workflowsData.total_count === 0) {
-        return analysis; // No workflows, no artifacts possible
-      }
-
-      analysis.hasWorkflows = true;
+      analysis.hasWorkflows = workflowsData.total_count > 0;
       analysis.workflows = workflowsData.workflows.map(w => ({
         id: w.id,
         name: w.name,
@@ -161,56 +159,52 @@ class GitHubArtifactsAnalyzer {
         state: w.state
       }));
 
-      // Get artifacts for each workflow
-      for (const workflow of analysis.workflows) {
-        try {
-          // Get recent workflow runs
-          const { data: runs } = await this.octokit.actions.listWorkflowRuns({
-            owner,
-            repo,
-            workflow_id: workflow.id,
-            per_page: 100 // Limit to recent runs
-          });
+      // Enumerate artifacts directly. Walking workflows -> runs -> artifacts
+      // capped out at 100 runs per workflow (silently undercounting) and cost
+      // O(workflows x runs) requests; this is the complete set in one
+      // paginated sweep. See issues #3 and #4.
+      const artifacts = await this.octokit.paginate(
+        this.octokit.actions.listArtifactsForRepo,
+        { owner, repo, per_page: 100 }
+      );
 
-          for (const run of runs.workflow_runs) {
-            try {
-              // Get artifacts for this run
-              const { data: artifactsData } = await this.octokit.actions.listWorkflowRunArtifacts({
-                owner,
-                repo,
-                run_id: run.id
-              });
+      // A repo can hold artifacts from workflows that have since been deleted,
+      // so artifacts are authoritative for whether Actions was ever used.
+      if (artifacts.length > 0) {
+        analysis.hasWorkflows = true;
+      }
 
-              for (const artifact of artifactsData.artifacts) {
-                if (artifact.size_in_bytes >= options.minSize) {
-                  const isExpired = artifact.expired || (artifact.expires_at ? new Date(artifact.expires_at) < new Date() : false);
-                  
-                  if (!isExpired || options.includeExpired) {
-                    const artifactInfo = {
-                      id: artifact.id,
-                      name: artifact.name,
-                      sizeInBytes: artifact.size_in_bytes,
-                      createdAt: new Date(artifact.created_at || Date.now()),
-                      updatedAt: new Date(artifact.updated_at || Date.now()),
-                      expiresAt: new Date(artifact.expires_at || Date.now()),
-                      expired: isExpired,
-                      workflowRunId: run.id,
-                      workflowName: workflow.name
-                    };
-
-                    analysis.artifacts.push(artifactInfo);
-                  }
-                }
-              }
-            } catch (error) {
-              // Skip individual run if we can't access it
-              continue;
-            }
-          }
-        } catch (error) {
-          // Skip workflow if we can't access it
+      for (const artifact of artifacts) {
+        if (artifact.size_in_bytes < options.minSize) {
           continue;
         }
+
+        const isExpired = artifact.expired || (artifact.expires_at ? new Date(artifact.expires_at) < new Date() : false);
+
+        if (isExpired && !options.includeExpired) {
+          continue;
+        }
+
+        analysis.artifacts.push({
+          id: artifact.id,
+          name: artifact.name,
+          sizeInBytes: artifact.size_in_bytes,
+          createdAt: new Date(artifact.created_at || Date.now()),
+          updatedAt: new Date(artifact.updated_at || Date.now()),
+          expiresAt: new Date(artifact.expires_at || Date.now()),
+          expired: isExpired,
+          workflowRunId: artifact.workflow_run?.id ?? null,
+          // This endpoint does not carry the workflow name. Resolving it costs
+          // one request per distinct run, so it is opt-in via resolveWorkflows;
+          // the branch is always available and is a usable fallback.
+          workflowName: null,
+          headBranch: artifact.workflow_run?.head_branch ?? null,
+          headSha: artifact.workflow_run?.head_sha ?? null
+        });
+      }
+
+      if (options.resolveWorkflows) {
+        await this.resolveWorkflowNames(owner, repo, analysis.artifacts, analysis.workflows);
       }
 
       // Calculate statistics
@@ -232,6 +226,40 @@ class GitHubArtifactsAnalyzer {
     }
 
     return analysis;
+  }
+
+  // Fills in workflowName for artifacts, one request per distinct workflow run
+  // (not per artifact). Failures leave workflowName null rather than aborting
+  // the analysis - a missing label must never lose an artifact from the totals.
+  async resolveWorkflowNames(owner, repo, artifacts, workflows = []) {
+    const runIds = [...new Set<number>(artifacts.map(a => a.workflowRunId).filter(id => id != null))];
+    const namesByRunId = new Map<number, string | null>();
+
+    // The run object carries workflow_id plus its own display title (e.g.
+    // "Push on main"). Prefer the actual workflow name from the list we
+    // already fetched; fall back to the run title only if the workflow has
+    // since been deleted.
+    const workflowNamesById = new Map<number, string>(
+      workflows.map(w => [w.id, w.name])
+    );
+
+    for (const runId of runIds) {
+      try {
+        const { data: run } = await this.octokit.actions.getWorkflowRun({
+          owner,
+          repo,
+          run_id: runId
+        });
+        namesByRunId.set(runId, workflowNamesById.get(run.workflow_id) ?? run.name);
+      } catch (error) {
+        namesByRunId.set(runId, null);
+      }
+      await this.sleep(50);
+    }
+
+    for (const artifact of artifacts) {
+      artifact.workflowName = namesByRunId.get(artifact.workflowRunId) ?? null;
+    }
   }
 
   calculateSummary(repositories) {
