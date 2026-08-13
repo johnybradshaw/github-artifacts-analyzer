@@ -1,0 +1,24 @@
+{
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "davidanson.vscode-markdownlint",
+        "esbenp.prettier-vscode",
+        "mikestead.dotenv",
+        "redhat.vscode-yaml",
+        "usernamehw.errorlens",
+        "dbaeumer.vscode-eslint",
+        "christian-kohler.npm-intellisense"
+      ],
+      "settings": {}
+    }
+  },
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:24-bookworm",
+  "name": "github-artifacts-analyzer",
+  "postCreateCommand": "npm ci || npm install",
+  "remoteEnv": {
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
+    "OP_SERVICE_ACCOUNT_TOKEN": "${localEnv:OP_SERVICE_ACCOUNT_TOKEN}"
+  }
+}
