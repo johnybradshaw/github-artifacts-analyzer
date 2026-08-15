@@ -2,6 +2,7 @@ import Table from 'cli-table3';
 import chalk from 'chalk';
 import { writeFileSync } from 'fs';
 import * as readline from 'readline';
+import { formatBytes } from './format.js';
 
 class ReportGenerator {
   async generateReport(analysis, options) {
@@ -290,14 +291,10 @@ class ReportGenerator {
     }
   }
 
+  // Kept as a method so existing callers of the class keep working; the
+  // implementation lives in ./format.ts and is shared with the analyzer.
   formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    return formatBytes(bytes);
   }
 
   formatDate(date) {
