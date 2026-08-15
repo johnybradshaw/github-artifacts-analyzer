@@ -7,6 +7,18 @@ import { ReportGenerator } from './reporter.js';
 import chalk from 'chalk';
 import ora from 'ora';
 
+// A dev container passes host credentials through with `${localEnv:VAR}`, and
+// that substitution resolves to an empty string when the host has no such
+// variable — so the variable exists in the container, holding "". dotenv only
+// fills in names that are absent from process.env, not names that are present
+// but empty, so an empty passthrough silently shadows the .env file that the
+// README tells you to create. Treat empty as absent before loading .env.
+for (const name of ['GITHUB_TOKEN']) {
+  if (process.env[name] === '') {
+    delete process.env[name];
+  }
+}
+
 // Load environment variables from .env file
 dotenv.config();
 
