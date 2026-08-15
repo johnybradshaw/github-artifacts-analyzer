@@ -10,7 +10,13 @@ class GitHubArtifactsAnalyzer {
     });
   }
 
-  async analyzeAllRepositories(username, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
+  // Defaults are merged rather than declared as a whole-object parameter
+  // default: that default only applies when the argument is omitted entirely,
+  // so a caller passing `{ resolveWorkflows: true }` would leave minSize and
+  // includeExpired undefined. This is published as a library, so partial
+  // options objects are the normal case, not a mistake.
+  async analyzeAllRepositories(username, opts = {}) {
+    const options = { includeExpired: false, minSize: 0, resolveWorkflows: false, ...opts };
     // Get authenticated user if no username provided
     if (!username) {
       const { data: user } = await this.octokit.users.getAuthenticated();
@@ -80,7 +86,9 @@ class GitHubArtifactsAnalyzer {
     };
   }
 
-  async analyzePublicRepositories(username, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
+  // Same defaulting rule as analyzeAllRepositories.
+  async analyzePublicRepositories(username, opts = {}) {
+    const options = { includeExpired: false, minSize: 0, resolveWorkflows: false, ...opts };
     const repositories = [];
     let page = 1;
     let hasMore = true;
@@ -126,7 +134,9 @@ class GitHubArtifactsAnalyzer {
     };
   }
 
-  async analyzeRepository(owner, repo, options = { includeExpired: false, minSize: 0, resolveWorkflows: false }) {
+  // Same defaulting rule as analyzeAllRepositories.
+  async analyzeRepository(owner, repo, opts = {}) {
+    const options = { includeExpired: false, minSize: 0, resolveWorkflows: false, ...opts };
     const analysis = {
       owner,
       name: repo,
@@ -143,16 +153,18 @@ class GitHubArtifactsAnalyzer {
     };
 
     try {
-      // Get workflows for the repository. This is one cheap call and is kept
-      // only so reports can show a workflow count; artifact discovery no
-      // longer depends on it.
-      const { data: workflowsData } = await this.octokit.actions.listRepoWorkflows({
-        owner,
-        repo
-      });
+      // Get workflows for the repository. Artifact discovery no longer depends
+      // on this, but resolveWorkflowNames looks names up in it, so it has to be
+      // the complete set: an unpaginated call returns only the first 30, and a
+      // repo with more than that would silently fall back to the run's display
+      // title ("Push on main") in place of the workflow name.
+      const workflowsData = await this.octokit.paginate(
+        this.octokit.actions.listRepoWorkflows,
+        { owner, repo, per_page: 100 }
+      );
 
-      analysis.hasWorkflows = workflowsData.total_count > 0;
-      analysis.workflows = workflowsData.workflows.map(w => ({
+      analysis.hasWorkflows = workflowsData.length > 0;
+      analysis.workflows = workflowsData.map(w => ({
         id: w.id,
         name: w.name,
         path: w.path,
