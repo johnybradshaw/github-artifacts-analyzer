@@ -144,9 +144,15 @@ class ReportGenerator {
     }
   }
 
+  // The artifacts endpoint carries the run's branch but not the workflow name;
+  // the name is only present when --resolve-workflows was used.
+  workflowLabel(artifact) {
+    return artifact.workflowName || artifact.headBranch || 'Unknown';
+  }
+
   showArtifactDetails(artifacts) {
     const artifactTable = new Table({
-      head: ['Name', 'Size', 'Workflow', 'Created', 'Expires', 'Status'],
+      head: ['Name', 'Size', 'Workflow / Branch', 'Created', 'Expires', 'Status'],
       style: { head: ['cyan'] },
       colWidths: [25, 12, 20, 12, 12, 10]
     });
@@ -163,7 +169,7 @@ class ReportGenerator {
       artifactTable.push([
         artifact.name.length > 24 ? artifact.name.substring(0, 21) + '...' : artifact.name,
         size,
-        artifact.workflowName?.substring(0, 18) || 'Unknown',
+        this.workflowLabel(artifact).substring(0, 18),
         this.formatDate(artifact.createdAt),
         this.formatDate(artifact.expiresAt),
         status
@@ -211,13 +217,13 @@ class ReportGenerator {
   }
 
   generateRepositoryCsvReport(analysis) {
-    const csvLines = ['Name,Size (Bytes),Workflow,Created,Expires,Expired'];
-    
+    const csvLines = ['Name,Size (Bytes),Workflow/Branch,Created,Expires,Expired'];
+
     for (const artifact of analysis.artifacts) {
       csvLines.push([
         artifact.name,
         artifact.sizeInBytes.toString(),
-        artifact.workflowName || 'Unknown',
+        this.workflowLabel(artifact),
         artifact.createdAt.toISOString(),
         artifact.expiresAt.toISOString(),
         artifact.expired.toString()

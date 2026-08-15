@@ -39,6 +39,7 @@ program
   .option('--include-expired', 'Include expired artifacts in analysis', false)
   .option('--min-size <bytes>', 'Minimum artifact size to include (in bytes)', '0')
   .option('--top <count>', 'Show top N repositories by storage usage', '10')
+  .option('--resolve-workflows', 'Resolve workflow names (one extra API call per workflow run)', false)
   .option('--cleanup', 'Interactive cleanup mode - delete artifacts to save space', false)
   .action(async (options) => {
     const token = options.token || process.env.GITHUB_TOKEN;
@@ -59,6 +60,7 @@ program
         {
           includeExpired: options.includeExpired,
           minSize: parseInt(options.minSize),
+          resolveWorkflows: options.resolveWorkflows,
         }
       );
 
@@ -89,6 +91,7 @@ program
   .option('-t, --token <token>', 'GitHub Personal Access Token (or set GITHUB_TOKEN env var)')
   .option('-f, --format <format>', 'Output format (table|json|csv)', 'table')
   .option('--include-expired', 'Include expired artifacts in analysis', false)
+  .option('--resolve-workflows', 'Resolve workflow names (one extra API call per workflow run)', false)
   .option('--cleanup', 'Interactive cleanup mode for this repository', false)
   .action(async (owner, repo, options) => {
     const token = options.token || process.env.GITHUB_TOKEN;
@@ -106,6 +109,7 @@ program
       const analysis = await analyzer.analyzeRepository(owner, repo, {
         includeExpired: options.includeExpired,
         minSize: 0,
+        resolveWorkflows: options.resolveWorkflows,
       });
 
       spinner.succeed('Analysis complete!');
